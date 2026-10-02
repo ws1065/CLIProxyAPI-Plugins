@@ -1,0 +1,7 @@
+# Build artifacts. Reproduce with ./build.sh
+dist/
+*.so
+
+# Editor / OS noise
+*.swp
+.DS_Store

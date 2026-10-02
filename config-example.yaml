@@ -1,0 +1,70 @@
+# 直接合并到 CLIProxyAPI 的 config.yaml。
+# 注意：openai-compatibility 的 models 里必须存在被映射到的目标模型，
+# 否则映射后的模型在该 provider 下不存在，请求会失败。
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    codex-policy:
+      enabled: true
+      priority: 10
+
+      # --- 官方客户端准入 ---
+      enforce_official_client: true
+      reject_status: 403
+      reject_message: "客户端不支持访问"
+      official_min_score: 5          # 必须命中强信号且总分 >= 该值
+      apply_to_non_codex: false      # true 时模型映射/思考降级也作用于 Claude/Gemini/chat 协议
+      enforce_all_protocols: true   # 客户端准入检查覆盖所有协议（推荐）
+      exempt_api_keys: []            # 这些 key 不限制（明文存储）
+      exempt_bypass_admission: true
+
+      # --- 思考等级降级 ---
+      effort:
+        enabled: true
+        downgrade_from: ["xhigh", "max", "ultra"]
+        target: "medium"
+        models: []                   # 空 = 不限模型
+        skip_for_exempt_keys: true
+
+      # --- 客户端无感模型映射 ---
+      model_map:
+        enabled: true
+        provider: "openai-compatible-or"   # 注册表 key，不是 config 里的 name
+        preserve_thinking_suffix: true      # model(high) 的后缀保留
+        rewrite_response_model: true        # 把响应里的模型名改回客户端请求的名字
+        skip_for_exempt_keys: true
+        rules:
+          - from: "gpt-5.6-sol-demo"        # 客户端请求的模型
+            to: "gpt-5.6-luna"             # 实际转发的模型
+            provider: ""                   # 留空则用上面的默认 provider
+            keys: []                        # 留空=所有 key；填了只对这些 key 生效
+
+      # --- 探针（零成本验证用，生产留空）---
+      # probe_model 必须是可路由的真实模型，且请求还要额外带 probe_header 才触发，
+      # 否则会劫持真实流量，表现为 stream closed before response.completed。
+      probe_model: ""
+      probe_header: "X-Policy-Probe"
+      probe_header_value: "1"
+
+      # --- 在线保存 ---
+      # 菜单“配置说明”页改值点保存时，插件要自己找到并改写 config.yaml。
+      # 留空 = 按 cwd 逐级探测 config.yaml（宿主以 /CLIProxyAPI/config.yaml 运行时可用）。
+      # 如果自动探测失败（例如 cwd 不是部署目录），在这里写绝对路径。
+      config_path: ""
+
+      # --- 日志 ---
+      log_decisions: true
+      log_format: "table"            # table | line
+      log_buffer_size: 200           # 菜单“请求日志”页保留条数（1-2000，重启清空）
+
+# 映射目标模型必须在这里真实存在：
+# api-keys:
+#     openai-compatibility:
+#         - "base-url": "https://openrouter.ai/api/v1"
+#           "name": "or"
+#           "models":
+#             - "alias": "gpt-5.6-sol-demo"
+#               "name": "stealth/space-bunny-alpha"
+#             - "alias": "gpt-5.6-luna"
+#               "name": "openai/gpt-4o-mini"
