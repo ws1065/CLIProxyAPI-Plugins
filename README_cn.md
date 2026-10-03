@@ -19,7 +19,7 @@
 
 三者都支持**按 key 豁免**：命中的 key 既跳过准入，也不做改写。
 
-当前版本：**0.4.5**
+当前版本：**0.5.0**
 
 ---
 
@@ -61,15 +61,15 @@ docker compose restart cli-proxy-api
 CPA 日志出现下面这行即加载成功：
 
 ```
-pluginhost: plugin registered plugin_id=codex-policy plugin_name=codex-policy version=0.4.4
+pluginhost: plugin registered plugin_id=codex-policy plugin_name=codex-policy version=0.5.0
 ```
 
 两个常见坑：
 
 1. `plugins.configs.codex-policy.enabled: false` 会让 CPA **完全跳过加载且不打任何日志**，
    这是「插件消失」最常见的原因。CPA 把缺省的 `enabled` 当作 `false`，所以必须显式写。
-2. `model_map.provider` 必须填**注册表 key**（例如 `openai-compatible-or`），不是配置里
-   显示的 `name`（例如 `or`）。填错只在 `logs/main.log` 里留一行 warn，请求会静默走原模型。
+2. `model_map.provider` 默认留空或填 `auto`，CPA 按目标模型自动选择可用供应商。
+   只有需要固定渠道时才填写注册表 key，例如 `openai-compatible-subapi`；显式指定已禁用渠道会记录 `PROVIDER_UNAVAILABLE`。
 
 ## 配置（CPA 的 `config.yaml`）
 
@@ -95,7 +95,7 @@ plugins:
         skip_for_exempt_keys: true
       model_map:
         enabled: true
-        provider: "openai-compatible-or"  # 注册表 key，不是显示名
+        provider: ""                    # 默认自动选择供应商，可写 auto
         preserve_thinking_suffix: true     # 保留 model(xhigh) 的后缀
         rewrite_response_model: true       # 响应里报客户端请求的模型名
         skip_for_exempt_keys: true
@@ -111,6 +111,26 @@ plugins:
       log_format: table
       log_buffer_size: 200
 ```
+
+### 自动选择供应商（默认）
+
+只需要配置模型转换：
+
+```yaml
+model_map:
+  provider: ""  # 留空或 auto：自动选择供应商
+  rules:
+    - from: gpt-6-astra
+      to: gpt-6.1-sol
+```
+
+规则保留目标模型，由 CPA 的实时模型注册表找到提供该模型的供应商，沿用宿主的凭据调度和失败重试。禁用旧供应商、启用新供应商后无需改规则；被禁用的原模型也可以作为 `from` 匹配。
+
+全局 `provider` 或规则内 `provider` 可填具体 key 固定渠道。规则内省略/空值继承全局设置；规则内填 `auto` 可覆盖全局固定渠道。
+
+自动模式通过插件执行器调用 `host.model.execute` / `host.model.execute_stream`，只把映射后的目标模型交给 CPA。宿主跳过本插件的嵌套路由与拦截，避免递归和重复降级；外层客户端限制、豁免、模型名还原仍生效。
+
+日志中 `provider=auto (CPA)` / `AUTO_PROVIDER_SELECTION` 表示使用宿主调度。它不冒充某个具体渠道；实际供应商可从 CPA 执行日志确认。源模型/目标模型和思考改写均显示在策略日志中。
 
 ### 两个协议范围开关
 
@@ -289,12 +309,23 @@ curl -s http://127.0.0.1:8080/v1/responses \
 
 - 准入基于请求特征，不是密码学证明；目标是劝退第三方客户端，不是抵御定向伪造。
 - `exempt_api_keys` 用常量时间比较，但 key 仍以明文存于 `config.yaml`。
-- 模型映射只能整体替换 provider 路由（`ModelRouteTargetProvider`），不能把请求转给另一个
-  插件的 executor；映射目标必须是该 provider 下真实存在的模型名。
+- 目标模型 `to` 始终固定；没有供应商提供该模型时请求会失败，不会自动改成别的模型。
+- 自动供应商模式支持推理请求；token count 接口返回 501。启用 CPA Home 模式时，宿主不支持这种插件执行器路由。
 - 客户端可见的模型名就是响应里的 `model` 字段，无法阻止客户端通过 `store: true` 或
   `include` 之类的字段观察上游返回的其他信息。
 
+验收记录和可复现命令见 [docs/verification-0.5.0.md](docs/verification-0.5.0.md)。
+
 ## 变更日志
+
+### 0.5.0
+
+- 默认自动选择供应商：`model_map.provider` 留空或 `auto`，只保留 `from/to`；显式固定渠道继续支持。
+- 交给 CPA 原生模型注册表和凭据调度处理，支持供应商切换、目标模型缺失时报错，避免选择不提供目标模型的渠道。
+- 流式桥接包含取消与卸载清理，逐帧改写支持跨 chunk 字节拆分；保留 SSE 的 CRLF 分隔符，并处理不带末尾换行的原生 Codex 事件。
+- Chat 协议的思考降级改写原有 `reasoning_effort` 字段。
+- 自动模式推理支持 HTTP JSON / SSE；token count 返回 501，CPA Home 模式不支持插件执行器路由。
+- 增加单元测试及 `tests/integration_auto.py`，使用隔离 CPA 和本地模拟上游验收。
 
 ### 0.4.5
 

@@ -80,12 +80,12 @@ var configFieldDocs = []configFieldDoc{
 		Description: "是否启用模型映射（客户端无感转发）。",
 	},
 	{
-		Key: "model_map.provider", Type: pluginapi.ConfigFieldTypeString, Default: "（空）",
-		Description: "默认目标 provider key，必须是注册表里的 key。\n例如 openai-compatibility 里 name=or，这里要填 openai-compatible-or（不是 or）。\n提供商必须已启用且有可用凭据。更换提供商时同步修改此值；不可用时请求日志显示 PROVIDER_UNAVAILABLE / ROUTE_REJECTED，并列出可用提供商。",
+		Key: "model_map.provider", Type: pluginapi.ConfigFieldTypeString, Default: "（空 = 自动选择）",
+		Description: "默认留空或填 auto：由 CPA 根据规则的目标模型，自动选择当前可用供应商，沿用宿主的凭据调度和失败重试。更换渠道不用修改映射规则。\n可选：填写 provider key 固定渠道，如 openai-compatible-subapi。显式渠道不可用时记录 PROVIDER_UNAVAILABLE / ROUTE_REJECTED。",
 	},
 	{
 		Key: "model_map.rules", Type: pluginapi.ConfigFieldTypeArray, Default: "[]",
-		Description: "映射规则列表，按顺序匹配，命中第一条即生效。\n每条：from=客户端请求的模型（支持 * 通配）、to=实际转发的模型、provider=可选覆盖默认 provider、keys=可选限定 access key。\n映射目标必须是该 provider 下真实存在的模型，否则请求会失败。",
+		Description: "映射规则列表，按顺序匹配，命中第一条即生效。\n每条：from=客户端请求的模型（支持 * 通配）、to=目标模型、keys=可选限定 access key。\nprovider 通常省略：继承默认供应商设置；填 auto 可覆盖全局固定渠道，恢复自动选择。目标模型保持固定，不会自动替换成别的模型。自动模式支持推理请求，不支持 token count 接口。",
 	},
 	{
 		Key: "model_map.preserve_thinking_suffix", Type: pluginapi.ConfigFieldTypeBoolean, Default: "true",

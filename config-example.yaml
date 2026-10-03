@@ -30,7 +30,7 @@ plugins:
       # --- 客户端无感模型映射 ---
       model_map:
         enabled: true
-        provider: "openai-compatible-or"   # 注册表 key，不是 config 里的 name
+        provider: ""                    # 默认自动选择供应商，可填 auto；目标模型保持固定
         preserve_thinking_suffix: true      # model(high) 的后缀保留
         rewrite_response_model: true        # 把响应里的模型名改回客户端请求的名字
         skip_for_exempt_keys: true

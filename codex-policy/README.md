@@ -12,6 +12,7 @@ Source files:
 | File | Role |
 |---|---|
 | `main.go` | Hooks: `model.route`, `request.intercept_before`, `response.intercept_after`, `response.intercept_stream_chunk` |
+| `auto_forward.go` | Automatic supplier selection through CPA native model execution; async streaming and cleanup |
 | `config_fields.go` | Single source of truth for every config key: type, default, description. Feeds both the CPA panel field list and the config page, so docs cannot drift from `defaultConfig()` |
 | `config_patch.go` | Online-save: surgical line-range replacement of the plugin block in `config.yaml`, validation, backup, atomic write |
 | `management.go` | `/settings`, `/logs` endpoints and the audit ring buffer |

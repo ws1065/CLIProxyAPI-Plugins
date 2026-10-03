@@ -22,7 +22,7 @@ Plugins for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (**CPA**
 All three are **per-API-key exemptable**: keys on the exempt list skip admission and skip
 rewriting.
 
-Current version: **0.4.5**
+Current version: **0.5.0**
 
 ---
 
@@ -64,7 +64,7 @@ docker compose restart cli-proxy-api
 The plugin is loaded when CPA logs:
 
 ```
-pluginhost: plugin registered plugin_id=codex-policy plugin_name=codex-policy version=0.4.4
+pluginhost: plugin registered plugin_id=codex-policy plugin_name=codex-policy version=0.5.0
 ```
 
 Two common traps:
@@ -72,9 +72,9 @@ Two common traps:
 1. `plugins.configs.codex-policy.enabled: false` makes CPA **skip loading entirely and print
    nothing at all** — this is the most common cause of "the plugin disappeared". CPA treats a
    missing `enabled` as `false`, so it must be written explicitly.
-2. `model_map.provider` must be a **registry key** (e.g. `openai-compatible-or`), not the `name`
-   shown in the config (e.g. `or`). A wrong value produces a single warning line in
-   `logs/main.log` and requests silently fall through to the unmapped model.
+2. Leave `model_map.provider` empty or set it to `auto` to let CPA select a supplier for the target model.
+   Only pin a registry key (e.g. `openai-compatible-subapi`) when a fixed channel is needed.
+   An unavailable pinned channel logs `PROVIDER_UNAVAILABLE`.
 
 ## Configuration (CPA `config.yaml`)
 
@@ -100,7 +100,7 @@ plugins:
         skip_for_exempt_keys: true
       model_map:
         enabled: true
-        provider: "openai-compatible-or"  # registry key, not the display name
+        provider: ""                    # automatic supplier selection; auto also works
         preserve_thinking_suffix: true     # keep the model(xhigh) suffix
         rewrite_response_model: true       # report the client-visible name in responses
         skip_for_exempt_keys: true
@@ -116,6 +116,26 @@ plugins:
       log_format: table
       log_buffer_size: 200
 ```
+
+### Automatic supplier selection (default)
+
+Configure only the model conversion:
+
+```yaml
+model_map:
+  provider: ""  # empty or auto: automatic supplier selection
+  rules:
+    - from: gpt-6-astra
+      to: gpt-6.1-sol
+```
+
+The target model stays fixed. CPA uses its live model registry to find suppliers that offer it, retaining native credential scheduling and retries. Disable the old channel and enable a new one without editing the rule. The source model need not be registered.
+
+An explicit global or per-rule `provider` pins a channel. An omitted/empty per-rule provider inherits the global value; per-rule `auto` overrides a global pinned channel.
+
+Automatic mode delegates the mapped model through `host.model.execute` / `host.model.execute_stream`. CPA skips this plugin's nested router and interceptors to avoid recursion and double rewriting. Outer admission, exemptions and client-visible model restoration remain effective.
+
+Audit records use `provider=auto (CPA)` and `AUTO_PROVIDER_SELECTION` for native scheduling; they do not claim a specific supplier was selected. CPA execution logs identify the actual supplier. The policy log shows requested/target models and effort changes.
 
 ### The two protocol-scope switches
 
@@ -311,13 +331,23 @@ as `stream closed before response.completed`.
   third-party clients, not to withstand targeted forgery.
 - `exempt_api_keys` is compared in constant time, but the keys are stored in plaintext in
   `config.yaml`.
-- Model mapping can only replace the provider route as a whole
-  (`ModelRouteTargetProvider`); it cannot hand a request to a different plugin's executor, and the
-  mapping target must be a model that genuinely exists under that provider.
+- The target model (`to`) stays fixed. When no supplier offers it, the request fails rather than selecting another model.
+- Automatic supplier mode supports inference requests; token count returns 501. CPA Home mode does not support this plugin-executor route.
 - The client-visible model name is the `model` field in the response. A client cannot be prevented
   from observing other upstream information through fields such as `store: true` or `include`.
 
+Acceptance evidence and reproducible commands: [docs/verification-0.5.0.md](docs/verification-0.5.0.md).
+
 ## Changelog
+
+### 0.5.0
+
+- Default automatic supplier selection: leave `model_map.provider` empty or use `auto`, retaining `from/to`. Explicit pinned channels remain supported.
+- Delegate to CPA's native model registry and credential scheduler, allowing supplier switches and preserving errors when the target model is unavailable.
+- Streaming bridge handles cancellation and unload cleanup, rewrites frames across byte-split chunks, and preserves CRLF delimiters and native Codex events without trailing newlines.
+- Chat effort downgrading updates the existing `reasoning_effort` field.
+- Automatic inference supports JSON / SSE; token count returns 501 and CPA Home mode does not support plugin-executor routing.
+- Added unit tests and `tests/integration_auto.py` with an isolated CPA and local mock upstreams.
 
 ### 0.4.5
 

@@ -19,6 +19,14 @@ typedef struct {
 	cliproxy_host_free_fn free_buffer;
 } cliproxy_host_api;
 
+static int policy_host_call(cliproxy_host_api* host, const char* method,
+    const uint8_t* request, size_t length, cliproxy_buffer* response) {
+    return host->call(host->host_ctx, method, request, length, response);
+}
+static void policy_host_free(cliproxy_host_api* host, void* ptr, size_t length) {
+    host->free_buffer(ptr, length);
+}
+
 typedef int (*cliproxy_plugin_call_fn)(char*, uint8_t*, size_t, cliproxy_buffer*);
 typedef void (*cliproxy_plugin_free_fn)(void*, size_t);
 typedef void (*cliproxy_plugin_shutdown_fn)(void);
@@ -60,7 +68,12 @@ import (
 const pluginID = "codex-policy"
 
 // pluginVersion is reported in the management menu and the audit log.
-const pluginVersion = "0.4.5"
+const pluginVersion = "0.5.0"
+
+var nativeHost struct {
+	mu  sync.RWMutex
+	api C.cliproxy_host_api
+}
 
 var state = pluginState{config: defaultConfig()}
 
@@ -200,11 +213,15 @@ type registration struct {
 }
 
 type registrationCapability struct {
-	RequestInterceptor   bool `json:"request_interceptor"`
-	ModelRouter          bool `json:"model_router"`
-	ResponseInterceptor  bool `json:"response_interceptor"`
-	StreamChunkIntercept bool `json:"response_stream_interceptor"`
-	ManagementAPI        bool `json:"management_api"`
+	Executor              bool     `json:"executor"`
+	ExecutorModelScope    string   `json:"executor_model_scope"`
+	ExecutorInputFormats  []string `json:"executor_input_formats"`
+	ExecutorOutputFormats []string `json:"executor_output_formats"`
+	RequestInterceptor    bool     `json:"request_interceptor"`
+	ModelRouter           bool     `json:"model_router"`
+	ResponseInterceptor   bool     `json:"response_interceptor"`
+	StreamChunkIntercept  bool     `json:"response_stream_interceptor"`
+	ManagementAPI         bool     `json:"management_api"`
 }
 
 type probeResult struct {
@@ -225,10 +242,16 @@ type probeResult struct {
 func main() {}
 
 //export cliproxy_plugin_init
-func cliproxy_plugin_init(_ *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
+func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
 	if plugin == nil {
 		return 1
 	}
+	if host != nil {
+		nativeHost.mu.Lock()
+		nativeHost.api = *host
+		nativeHost.mu.Unlock()
+	}
+	resetAutoStreams()
 	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
@@ -268,7 +291,36 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 }
 
 //export cliproxyPluginShutdown
-func cliproxyPluginShutdown() {}
+func cliproxyPluginShutdown() { stopAutoStreams() }
+
+func callNativeHost(method string, payload []byte) ([]byte, error) {
+	nativeHost.mu.RLock()
+	api := nativeHost.api
+	nativeHost.mu.RUnlock()
+	if api.call == nil || api.free_buffer == nil {
+		return nil, fmt.Errorf("CPA host callback is unavailable")
+	}
+	name := C.CString(method)
+	defer C.free(unsafe.Pointer(name))
+	var input unsafe.Pointer
+	if len(payload) > 0 {
+		input = C.CBytes(payload)
+		defer C.free(input)
+	}
+	var out C.cliproxy_buffer
+	rc := C.policy_host_call(&api, name, (*C.uint8_t)(input), C.size_t(len(payload)), &out)
+	if out.ptr != nil {
+		defer C.policy_host_free(&api, out.ptr, out.len)
+	}
+	if out.len > 1<<30 {
+		return nil, fmt.Errorf("CPA callback response too large")
+	}
+	if out.ptr != nil && out.len > 0 {
+		// Preserve the host's error envelope, including HTTP status.
+		return C.GoBytes(out.ptr, C.int(out.len)), nil
+	}
+	return nil, fmt.Errorf("CPA host callback %s failed (code=%d)", method, rc)
+}
 
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
@@ -291,6 +343,17 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(managementRegistration())
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
+	case pluginabi.MethodExecutorIdentifier:
+		return okEnvelope(map[string]string{"identifier": pluginID})
+	case pluginabi.MethodExecutorExecute:
+		return executeAutoMapping(request, false)
+	case pluginabi.MethodExecutorExecuteStream:
+		return executeAutoMapping(request, true)
+	case pluginabi.MethodExecutorCountTokens, pluginabi.MethodExecutorHTTPRequest:
+		return pluginabi.NewErrorEnvelope("unsupported_operation", "Automatic supplier selection supports inference requests only", http.StatusNotImplemented)
+	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
+		stopAutoStreams()
+		return okEnvelope(map[string]any{})
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -355,14 +418,14 @@ func configureRaw(configYAML []byte) error {
 	logf("configured: enforce_official_client=%v min_score=%d reject_status=%d reject_message=%q effort.enabled=%v downgrade_from=%v target=%q model_map.enabled=%v rules=%d default_provider=%q rewrite_response_model=%v exempt_keys=%d probe_model=%q",
 		boolValue(cfg.EnforceOfficialClient, true), cfg.OfficialMinScore, cfg.RejectStatus, cfg.RejectMessage,
 		boolValue(cfg.Effort.Enabled, true), cfg.Effort.DowngradeFrom, cfg.Effort.Target,
-		boolValue(cfg.ModelMap.Enabled, true), len(cfg.ModelMap.Rules), cfg.ModelMap.Provider,
+		boolValue(cfg.ModelMap.Enabled, true), len(cfg.ModelMap.Rules), providerLabel(cfg.ModelMap.Provider),
 		boolValue(cfg.ModelMap.RewriteResponseModel, true), len(cfg.ExemptAPIKeys), cfg.ProbeModel)
 	for _, rule := range cfg.ModelMap.Rules {
 		provider := rule.Provider
 		if provider == "" {
 			provider = cfg.ModelMap.Provider
 		}
-		logf("model-map rule: %s -> %s (provider=%s, keys=%d)", rule.From, rule.To, provider, len(rule.Keys))
+		logf("model-map rule: %s -> %s (provider=%s, keys=%d)", rule.From, rule.To, providerLabel(provider), len(rule.Keys))
 	}
 	return nil
 }
@@ -378,11 +441,14 @@ func pluginRegistration() registration {
 			ConfigFields:     configFields(),
 		},
 		Capabilities: registrationCapability{
-			RequestInterceptor:   true,
-			ModelRouter:          true,
-			ResponseInterceptor:  true,
-			StreamChunkIntercept: true,
-			ManagementAPI:        true,
+			Executor: true, ExecutorModelScope: "static",
+			ExecutorInputFormats:  []string{"openai-response", "openai", "claude", "gemini"},
+			ExecutorOutputFormats: []string{"openai-response", "openai", "claude", "gemini"},
+			RequestInterceptor:    true,
+			ModelRouter:           true,
+			ResponseInterceptor:   true,
+			StreamChunkIntercept:  true,
+			ManagementAPI:         true,
 		},
 	}
 }
@@ -445,7 +511,11 @@ func interceptRequest(raw []byte) ([]byte, error) {
 	finalEffort := originalEffort
 	rewritten := false
 	if rewriteApplies && shouldRewriteEffort(cfg, req, exempt) && isDowngradeTarget(cfg, originalEffort) {
-		if updated, errSet := sjson.SetBytes(body, "reasoning.effort", cfg.Effort.Target); errSet == nil {
+		path := "reasoning.effort"
+		if gjson.GetBytes(body, "reasoning_effort").Exists() {
+			path = "reasoning_effort"
+		}
+		if updated, errSet := sjson.SetBytes(body, path, cfg.Effort.Target); errSet == nil {
 			body = updated
 			finalEffort = cfg.Effort.Target
 			rewritten = true
@@ -454,6 +524,9 @@ func interceptRequest(raw []byte) ([]byte, error) {
 	actions := make([]string, 0, 3)
 	if route != nil {
 		actions = append(actions, "MODEL_MAPPED")
+		if route.Provider == "" {
+			actions = append(actions, "AUTO_PROVIDER_SELECTION")
+		}
 	}
 	if rewritten {
 		actions = append(actions, "EFFORT_DOWNGRADED")
@@ -514,7 +587,7 @@ func routeModel(raw []byte) ([]byte, error) {
 	}
 	// The host validates provider availability after this hook returns. Never
 	// claim that a rejected proposal was routed or cache it as an applied map.
-	if req.AvailableProviders != nil {
+	if decision.Provider != "" && req.AvailableProviders != nil {
 		available := false
 		for _, provider := range req.AvailableProviders {
 			if strings.EqualFold(strings.TrimSpace(provider), decision.Provider) {
@@ -538,12 +611,20 @@ func routeModel(raw []byte) ([]byte, error) {
 	response.TargetKind = pluginapi.ModelRouteTargetProvider
 	response.Target = decision.Provider
 	response.TargetModel = decision.Target
+	if decision.Provider == "" {
+		response.TargetKind = pluginapi.ModelRouteTargetSelf
+		response.Target = pluginID
+	}
 	response.Reason = "codex-policy model_map: " + rule
 	rememberRouteDecision(routeCacheKey(clientAPIKey(req.Headers), req.SourceFormat, req.RequestedModel), *decision)
+	actions := []string{"MODEL_MAPPING_PROPOSED"}
+	if decision.Provider == "" {
+		actions = append(actions, "AUTO_PROVIDER_SELECTION")
+	}
 	logDecision(cfg, decisionRecord{
 		Phase: "route", ClientKey: clientAPIKey(req.Headers), Exempt: isExempt(cfg, clientAPIKey(req.Headers)),
 		Source: req.SourceFormat, Client: clientUserAgent(req.Headers), ReqModel: req.RequestedModel,
-		Route: decision, Admitted: true, Actions: []string{"MODEL_MAPPING_PROPOSED"}, Result: "ROUTE_PROPOSED",
+		Route: decision, Admitted: true, Actions: actions, Result: "ROUTE_PROPOSED",
 	})
 	return okEnvelope(response)
 }
@@ -575,8 +656,8 @@ func resolveModelRoute(cfg pluginConfig, req pluginapi.ModelRouteRequest) (*rout
 		if provider == "" {
 			provider = cfg.ModelMap.Provider
 		}
-		if provider == "" {
-			continue
+		if provider == "auto" {
+			provider = ""
 		}
 		target := rule.To
 		if suffix != "" && boolValue(cfg.ModelMap.PreserveSuffix, true) {
@@ -756,7 +837,11 @@ func rewriteSSE(payload []byte, visible string) []byte {
 			continue
 		}
 		prefix := line[:idx]
-		lines[i] = prefix + "data: " + string(updated)
+		ending := ""
+		if strings.HasSuffix(line, "\r") {
+			ending = "\r"
+		}
+		lines[i] = prefix + "data: " + string(updated) + ending
 		changed = true
 	}
 	if !changed {
@@ -1177,7 +1262,7 @@ func routeProvider(route *routeDecision) string {
 	if route == nil {
 		return ""
 	}
-	return route.Provider
+	return providerLabel(route.Provider)
 }
 
 func routeCacheKey(key, format, model string) string {
