@@ -60,7 +60,7 @@ import (
 const pluginID = "codex-policy"
 
 // pluginVersion is reported in the management menu and the audit log.
-const pluginVersion = "0.4.4"
+const pluginVersion = "0.4.5"
 
 var state = pluginState{config: defaultConfig()}
 
@@ -512,6 +512,28 @@ func routeModel(raw []byte) ([]byte, error) {
 	if decision == nil {
 		return okEnvelope(response)
 	}
+	// The host validates provider availability after this hook returns. Never
+	// claim that a rejected proposal was routed or cache it as an applied map.
+	if req.AvailableProviders != nil {
+		available := false
+		for _, provider := range req.AvailableProviders {
+			if strings.EqualFold(strings.TrimSpace(provider), decision.Provider) {
+				available = true
+				break
+			}
+		}
+		if !available {
+			logDecision(cfg, decisionRecord{
+				Phase: "route", ClientKey: clientAPIKey(req.Headers),
+				Source: req.SourceFormat, Client: clientUserAgent(req.Headers), ReqModel: req.RequestedModel,
+				Route: decision, Actions: []string{"PROVIDER_UNAVAILABLE"},
+				Signals: append([]string{"configured_provider=" + decision.Provider}, req.AvailableProviders...),
+				Result:  "ROUTE_REJECTED",
+			})
+			logf("模型映射未应用 / model mapping not applied: model=%q target=%q configured_provider=%q available_providers=%v; 请将 model_map.provider 设置为启用的提供商", req.RequestedModel, decision.Target, decision.Provider, req.AvailableProviders)
+			return okEnvelope(response)
+		}
+	}
 	response.Handled = true
 	response.TargetKind = pluginapi.ModelRouteTargetProvider
 	response.Target = decision.Provider
@@ -521,7 +543,7 @@ func routeModel(raw []byte) ([]byte, error) {
 	logDecision(cfg, decisionRecord{
 		Phase: "route", ClientKey: clientAPIKey(req.Headers), Exempt: isExempt(cfg, clientAPIKey(req.Headers)),
 		Source: req.SourceFormat, Client: clientUserAgent(req.Headers), ReqModel: req.RequestedModel,
-		Route: decision, Admitted: true, Actions: []string{"MODEL_MAPPED"}, Result: "ROUTED",
+		Route: decision, Admitted: true, Actions: []string{"MODEL_MAPPING_PROPOSED"}, Result: "ROUTE_PROPOSED",
 	})
 	return okEnvelope(response)
 }

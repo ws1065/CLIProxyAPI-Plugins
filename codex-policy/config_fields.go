@@ -81,7 +81,7 @@ var configFieldDocs = []configFieldDoc{
 	},
 	{
 		Key: "model_map.provider", Type: pluginapi.ConfigFieldTypeString, Default: "（空）",
-		Description: "默认目标 provider key，必须是注册表里的 key。\n例如 openai-compatibility 里 name=or，这里要填 openai-compatible-or（不是 or）。\n填错不会报错，只会静默走原模型，告警在 logs/main.log 里。",
+		Description: "默认目标 provider key，必须是注册表里的 key。\n例如 openai-compatibility 里 name=or，这里要填 openai-compatible-or（不是 or）。\n提供商必须已启用且有可用凭据。更换提供商时同步修改此值；不可用时请求日志显示 PROVIDER_UNAVAILABLE / ROUTE_REJECTED，并列出可用提供商。",
 	},
 	{
 		Key: "model_map.rules", Type: pluginapi.ConfigFieldTypeArray, Default: "[]",

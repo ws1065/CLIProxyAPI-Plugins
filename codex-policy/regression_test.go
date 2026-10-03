@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -351,5 +352,70 @@ func TestRewriteAppliesToNonCodexOnlyWhenEnabled(t *testing.T) {
 	}
 	if err := configureRaw([]byte("official_min_score: 5\n")); err != nil {
 		t.Fatalf("restore config: %v", err)
+	}
+}
+
+func TestRouteProviderAvailability(t *testing.T) {
+	previous := configuredRaw()
+	t.Cleanup(func() {
+		raw, _ := yaml.Marshal(previous)
+		if err := configureRaw(raw); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := configureRaw([]byte(`model_map:
+  provider: openai-compatible-subapi
+  rules:
+    - from: gpt-6-astra
+      to: gpt-6.1-sol
+exempt_api_keys: [exempt-test]
+log_decisions: false
+`)); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name      string
+		providers []string
+		key       string
+		handled   bool
+	}{
+		{"available", []string{"openai-compatible-subapi"}, "restricted-test", true},
+		{"disabled target", []string{"openai-compatible-other"}, "restricted-test", false},
+		{"empty providers", []string{}, "restricted-test", false},
+		{"legacy host omits list", nil, "restricted-test", true},
+		{"exempt", []string{"openai-compatible-subapi"}, "exempt-test", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := pluginapi.ModelRouteRequest{SourceFormat: "openai-response", RequestedModel: "gpt-6-astra", Headers: http.Header{"Authorization": {"Bearer " + tc.key}}, AvailableProviders: tc.providers}
+			raw, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := routeModel(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope struct {
+				OK     bool                         `json:"ok"`
+				Result pluginapi.ModelRouteResponse `json:"result"`
+			}
+			if err := json.Unmarshal(out, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if !envelope.OK || envelope.Result.Handled != tc.handled {
+				t.Fatalf("unexpected route: %s", out)
+			}
+			if tc.handled && (envelope.Result.Target != "openai-compatible-subapi" || envelope.Result.TargetModel != "gpt-6.1-sol") {
+				t.Fatalf("wrong target: %s", out)
+			}
+			if tc.name == "disabled target" {
+				decisionLog.mu.Lock()
+				last := decisionLog.entries[len(decisionLog.entries)-1]
+				decisionLog.mu.Unlock()
+				if last.Result != "ROUTE_REJECTED" || last.Actions[0] != "PROVIDER_UNAVAILABLE" {
+					t.Fatalf("misleading audit: %+v", last)
+				}
+			}
+		})
 	}
 }

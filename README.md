@@ -22,7 +22,7 @@ Plugins for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (**CPA**
 All three are **per-API-key exemptable**: keys on the exempt list skip admission and skip
 rewriting.
 
-Current version: **0.4.4**
+Current version: **0.4.5**
 
 ---
 
@@ -241,10 +241,7 @@ Two caveats:
 
 ### Hot reload: what actually works
 
-Only the plugin's own `/settings` endpoint applies changes immediately. **Hand-editing
-`config.yaml` with sed or an editor does not hot-reload** — the host logs no reload event and
-behaviour is unchanged until you run `docker restart`. This is the single most common cause of
-"I changed the configuration but nothing happened".
+The plugin's `/settings` endpoint applies plugin settings immediately. The host can also watch file changes. With a single-file Docker bind mount, an editor or `sed -i` replacing the file atomically can leave the container reading the old inode. Check the configuration inside the container and reload logs after manual edits; restart the container if needed to remount the file.
 
 Resource routes (`/v0/resource/...`) are unauthenticated by CPA design, so the log page only
 stores masked keys (`sk-W...NiHm`). Still, expose the management port only on a trusted network.
@@ -321,6 +318,12 @@ as `stream closed before response.completed`.
   from observing other upstream information through fields such as `store: true` or `include`.
 
 ## Changelog
+
+### 0.4.5
+
+- Check the host's available provider list before proposing a route. An unavailable target logs `PROVIDER_UNAVAILABLE` / `ROUTE_REJECTED` with configured and available providers, and is not cached as an applied mapping.
+- Route-hook logs now say `ROUTE_PROPOSED`; reaching the subsequent policy stage confirms host acceptance.
+- Update `model_map.provider` when switching providers. When replacing disabled `or` with enabled `subapi`, use `openai-compatible-subapi`. Check non-empty per-rule provider overrides too.
 
 ### 0.4.4
 
