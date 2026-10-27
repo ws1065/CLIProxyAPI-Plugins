@@ -15,6 +15,8 @@ type configFieldDoc struct {
 }
 
 var configFieldDocs = []configFieldDoc{
+	{Key: "requested_model_log_dir", Type: pluginapi.ConfigFieldTypeString, Default: "data/requested-models", Description: "原始请求模型持久记录目录，按用量事件精确关联。只保存模型、时间、请求 ID 与客户端 HMAC；空值关闭。"},
+	{Key: "tracker_api_key_secret", Type: pluginapi.ConfigFieldTypeString, Default: "123456", Description: "必须与 cap-token-usage-tracker 的 API Key 索引秘密一致，用于请求模型记录的客户端 HMAC。"},
 	{
 		Key: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Default: "true",
 		Description: "总开关。false 时宿主直接跳过加载插件且不打印任何日志。\n排查“插件消失”先看这里。注意：宿主把缺省值当作 false，所以这一项必须显式写 true 才会加载。",

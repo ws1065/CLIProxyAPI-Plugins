@@ -68,7 +68,7 @@ import (
 const pluginID = "codex-policy"
 
 // pluginVersion is reported in the management menu and the audit log.
-const pluginVersion = "0.5.0"
+const pluginVersion = "0.5.1"
 
 var nativeHost struct {
 	mu  sync.RWMutex
@@ -149,6 +149,8 @@ type pluginConfig struct {
 	LogDecisions          *bool          `yaml:"log_decisions"`
 	LogFormat             string         `yaml:"log_format"`
 	LogBufferSize         *int           `yaml:"log_buffer_size"`
+	RequestedModelLogDir  string         `yaml:"requested_model_log_dir"`
+	TrackerAPIKeySecret   string         `yaml:"tracker_api_key_secret"`
 }
 
 func defaultConfig() pluginConfig {
@@ -177,12 +179,14 @@ func defaultConfig() pluginConfig {
 			RewriteResponseModel: &t,
 			SkipForExemptKeys:    &t,
 		},
-		ProbeModel:       "",
-		ProbeHeader:      "X-Policy-Probe",
-		ProbeHeaderValue: "1",
-		LogDecisions:     &logDecisions,
-		LogFormat:        "table",
-		LogBufferSize:    intPtr(200),
+		ProbeModel:           "",
+		ProbeHeader:          "X-Policy-Probe",
+		ProbeHeaderValue:     "1",
+		LogDecisions:         &logDecisions,
+		LogFormat:            "table",
+		LogBufferSize:        intPtr(200),
+		RequestedModelLogDir: "data/requested-models",
+		TrackerAPIKeySecret:  "123456",
 	}
 }
 
@@ -222,6 +226,7 @@ type registrationCapability struct {
 	ResponseInterceptor   bool     `json:"response_interceptor"`
 	StreamChunkIntercept  bool     `json:"response_stream_interceptor"`
 	ManagementAPI         bool     `json:"management_api"`
+	UsagePlugin           bool     `json:"usage_plugin"`
 }
 
 type probeResult struct {
@@ -339,6 +344,8 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return interceptStreamChunk(request)
 	case pluginabi.MethodRequestInterceptAfter, pluginabi.MethodRequestComplete:
 		return passthroughRequest(request)
+	case pluginabi.MethodUsageHandle:
+		return recordRequestedModelUsage(request)
 	case pluginabi.MethodManagementRegister:
 		return okEnvelope(managementRegistration())
 	case pluginabi.MethodManagementHandle:
@@ -449,6 +456,7 @@ func pluginRegistration() registration {
 			ResponseInterceptor:   true,
 			StreamChunkIntercept:  true,
 			ManagementAPI:         true,
+			UsagePlugin:           true,
 		},
 	}
 }
@@ -460,6 +468,7 @@ func interceptRequest(raw []byte) ([]byte, error) {
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
 		return nil, errUnmarshal
 	}
+	rememberRequestedModel(req)
 	cfg := currentConfig()
 	isCodex := isCodexFormat(req.SourceFormat)
 	// The official-client restriction is a property of the *client*, not of the
